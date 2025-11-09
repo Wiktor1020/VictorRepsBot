@@ -1,201 +1,209 @@
 import discord
 from discord.ext import commands, tasks
-from discord.ui import View, Button
-import json
+from discord import app_commands
 import asyncio
+import json
 import os
 from datetime import datetime, timedelta
+import random
 
-GIVEAWAY_FILE = "giveaways.json"
-BUTTON_STYLE_JOIN = discord.ButtonStyle.grey
-EMBED_COLOR = discord.Color.red()
+GIVEAWAYS_FILE = "giveaways.json"
 
+
+# ----------------- Pomocnicze funkcje -----------------
 def load_giveaways():
-    if not os.path.exists(GIVEAWAY_FILE):
+    if not os.path.exists(GIVEAWAYS_FILE):
         return {}
-    with open(GIVEAWAY_FILE, "r") as f:
+    with open(GIVEAWAYS_FILE, "r") as f:
         return json.load(f)
 
+
 def save_giveaways(data):
-    with open(GIVEAWAY_FILE, "w") as f:
+    with open(GIVEAWAYS_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
-class GiveawayView(View):
+
+def parse_time(time_str):
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    try:
+        return int(time_str[:-1]) * units[time_str[-1]]
+    except Exception:
+        return None
+
+
+# ---------------- Giveaway View -----------------
+class GiveawayView(discord.ui.View):
     def __init__(self, message_id: int):
-        super().__init__(timeout=None)
+        super().__init__(timeout=None)  # persistent view
         self.message_id = message_id
 
     @discord.ui.button(
-        label="🎟️ Weź udział",
-        style=BUTTON_STYLE_JOIN,
-        custom_id="persistent_giveaway_join"  # ważne: persistent view
+        label="🎟️ Dołącz do konkursu",
+        style=discord.ButtonStyle.grey,
+        custom_id="persistent_giveaway_join"
     )
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
         data = load_giveaways()
-        g = data.get(str(self.message_id))
-        if not g or g.get("ended"):
-            await interaction.response.send_message("⚠️ Ten giveaway już się zakończył.", ephemeral=True)
+        giveaway = data.get(str(self.message_id))
+
+        if not giveaway:
+            await interaction.response.send_message("❌ Ten konkurs już się zakończył.", ephemeral=True)
             return
 
-        uid = str(interaction.user.id)
-        if uid in g["participants"]:
-            await interaction.response.send_message("❌ Już bierzesz udział w tym giveawayu!", ephemeral=True)
+        participants = giveaway["participants"]
+
+        if interaction.user.id in participants:
+            await interaction.response.send_message("⚠️ Już bierzesz udział w tym konkursie!", ephemeral=True)
             return
 
-        g["participants"].append(uid)
+        participants.append(interaction.user.id)
+        giveaway["participants"] = participants
         save_giveaways(data)
 
-        try:
-            bot = interaction.client
-            channel = bot.get_channel(g["channel_id"])
-            msg = await channel.fetch_message(self.message_id)
-            embed = msg.embeds[0]
-            desc_lines = embed.description.split("\n")
-            for i, line in enumerate(desc_lines):
-                if line.startswith("📊"):
-                    desc_lines[i] = f"📊 **Uczestnicy:** {len(g['participants'])}**"
-            embed.description = "\n".join(desc_lines)
-            await msg.edit(embed=embed, view=self)
-        except Exception:
-            pass
+        await interaction.response.send_message("✅ Zgłoszono Twój udział w konkursie!", ephemeral=True)
 
-        await interaction.response.send_message("✅ Dołączyłeś do giveawayu!", ephemeral=True)
 
+# ---------------- Giveaway Cog -----------------
 class Giveaway(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.check_giveaways.start()
 
-    def cog_unload(self):
-        self.check_giveaways.cancel()
-
     @commands.Cog.listener()
     async def on_ready(self):
-        print("✅ Giveaway module ready.")
         data = load_giveaways()
         for message_id in data.keys():
             self.bot.add_view(GiveawayView(int(message_id)))
+        print("✅ Giveaway module ready.")
 
-    @tasks.loop(seconds=30)
-    async def check_giveaways(self):
-        data = load_giveaways()
-        updated = False
-        for message_id, g in data.items():
-            if g.get("ended"):
-                continue
-
-            end_time = datetime.fromisoformat(g["end_time"])
-            if datetime.utcnow() >= end_time:
-                g["ended"] = True
-                updated = True
-                await self.end_giveaway(g, int(message_id))
-        if updated:
-            save_giveaways(data)
-
-    async def end_giveaway(self, g, message_id):
-        channel = self.bot.get_channel(g["channel_id"])
-        if not channel:
-            return
-        try:
-            msg = await channel.fetch_message(message_id)
-        except:
+    # ---------------- Komenda: /giveaway -----------------
+    @app_commands.command(name="giveaway", description="🎉 Rozpocznij nowy konkurs")
+    @app_commands.describe(
+        czas="Czas trwania (np. 10m, 1h, 1d)",
+        nagroda="Nagroda w konkursie",
+        liczba_wygranych="Ilość zwycięzców (domyślnie 1)"
+    )
+    async def giveaway(self, interaction: discord.Interaction, czas: str, nagroda: str, liczba_wygranych: int = 1):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Nie masz uprawnień do tworzenia konkursów.", ephemeral=True)
             return
 
-        participants = g["participants"]
-        winners_count = g.get("winners", 1)
-
-        if not participants:
-            result = "Brak uczestników 😢"
-        else:
-            winners = []
-            for _ in range(min(winners_count, len(participants))):
-                winner_id = participants.pop(participants.index(asyncio.random.choice(participants)))
-                winners.append(winner_id)
-
-            mentions = ", ".join(f"<@{w}>" for w in winners)
-            result = f"🎉 Gratulacje {mentions}! Wygrywacie **{g['prize']}**!"
-
-        embed = discord.Embed(
-            title=f"🎉 Giveaway zakończony!",
-            description=f"🎁 **Nagroda:** {g['prize']}\n{result}",
-            color=discord.Color.red()
-        )
-        embed.set_footer(text="Giveaway zakończony!")
-
-        await msg.edit(embed=embed, view=None)
-        await channel.send(result)
-
-    @commands.hybrid_command(name="giveaway")
-    @commands.has_permissions(manage_messages=True)
-    async def giveaway(self, ctx, czas: str, liczba_wygranych: int, *, nagroda: str):
-        """Tworzy nowy giveaway (np. /giveaway 2m 1 Discord Nitro)"""
-        time_map = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-        unit = czas[-1]
-        if unit not in time_map:
-            await ctx.send("❌ Niepoprawny format czasu! Użyj s/m/h/d.")
-            return
-
-        try:
-            seconds = int(czas[:-1]) * time_map[unit]
-        except:
-            await ctx.send("❌ Niepoprawny format czasu!")
+        seconds = parse_time(czas)
+        if not seconds:
+            await interaction.response.send_message("❌ Niepoprawny format czasu. Użyj np. `10m`, `1h`, `2d`.", ephemeral=True)
             return
 
         end_time = datetime.utcnow() + timedelta(seconds=seconds)
+
         embed = discord.Embed(
-            title="🎉 Nowy Giveaway!",
-            description=(
-                f"🎁 **Nagroda:** {nagroda}\n"
-                f"🏆 **Zwycięzcy:** {liczba_wygranych}\n"
-                f"⏰ **Koniec:** <t:{int(end_time.timestamp())}:R>\n"
-                f"📊 **Uczestnicy:** 0"
-            ),
-            color=EMBED_COLOR
+            title="🎉 Konkurs!",
+            description=f"**Nagroda:** {nagroda}\n"
+                        f"**Zakończenie:** <t:{int(end_time.timestamp())}:R>\n"
+                        f"**Liczba zwycięzców:** {liczba_wygranych}",
+            color=discord.Color.red()
         )
-        embed.set_footer(text=f"Rozpoczęty przez {ctx.author}")
+        embed.set_footer(text="Kliknij przycisk, aby dołączyć 🎟️")
 
         view = GiveawayView(0)
-        msg = await ctx.send(embed=embed, view=view)
-        view.message_id = msg.id
+        message = await interaction.channel.send(embed=embed, view=view)
+        view.message_id = message.id
 
         data = load_giveaways()
-        data[str(msg.id)] = {
+        data[str(message.id)] = {
+            "guild_id": interaction.guild_id,
+            "channel_id": interaction.channel_id,
+            "message_id": message.id,
+            "end_time": end_time.timestamp(),
             "prize": nagroda,
-            "winners": liczba_wygranych,
-            "channel_id": ctx.channel.id,
-            "end_time": end_time.isoformat(),
-            "participants": [],
-            "ended": False
+            "winners_count": liczba_wygranych,
+            "participants": []
         }
         save_giveaways(data)
-        self.bot.add_view(GiveawayView(msg.id))
-        await ctx.send("✅ Giveaway został utworzony!")
 
-    @commands.hybrid_command(name="giveawayreroll")
-    @commands.has_permissions(manage_messages=True)
-    async def giveaway_reroll(self, ctx, message_id: int):
-        """Losuje nowych zwycięzców"""
-        data = load_giveaways()
-        g = data.get(str(message_id))
-        if not g or not g.get("ended"):
-            await ctx.send("❌ Ten giveaway jeszcze trwa lub nie istnieje.")
-            return
-        await self.end_giveaway(g, message_id)
-        await ctx.send("🔁 Giveaway został ponownie wylosowany!")
+        await interaction.response.send_message("✅ Konkurs został utworzony!", ephemeral=True)
 
-    @commands.hybrid_command(name="giveawayend")
-    @commands.has_permissions(manage_messages=True)
-    async def giveaway_end(self, ctx, message_id: int):
-        """Zakończ giveaway wcześniej"""
-        data = load_giveaways()
-        g = data.get(str(message_id))
-        if not g or g.get("ended"):
-            await ctx.send("❌ Ten giveaway już się zakończył lub nie istnieje.")
+    # ---------------- Komenda: /giveawayend -----------------
+    @app_commands.command(name="giveawayend", description="⏹️ Zakończ trwający konkurs")
+    async def giveawayend(self, interaction: discord.Interaction, message_id: str):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Brak uprawnień.", ephemeral=True)
             return
-        g["ended"] = True
+
+        data = load_giveaways()
+        giveaway = data.get(str(message_id))
+        if not giveaway:
+            await interaction.response.send_message("❌ Nie znaleziono konkursu.", ephemeral=True)
+            return
+
+        await self.end_giveaway(giveaway)
+        del data[str(message_id)]
         save_giveaways(data)
-        await self.end_giveaway(g, message_id)
-        await ctx.send("🛑 Giveaway został zakończony ręcznie.")
 
+        await interaction.response.send_message("✅ Konkurs zakończony!", ephemeral=True)
+
+    # ---------------- Komenda: /giveawayreroll -----------------
+    @app_commands.command(name="giveawayreroll", description="🔁 Wylosuj ponownie zwycięzców konkursu")
+    async def giveawayreroll(self, interaction: discord.Interaction, message_id: str):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Brak uprawnień.", ephemeral=True)
+            return
+
+        data = load_giveaways()
+        giveaway = data.get(str(message_id))
+        if not giveaway:
+            await interaction.response.send_message("❌ Nie znaleziono konkursu.", ephemeral=True)
+            return
+
+        await self.end_giveaway(giveaway, reroll=True)
+        await interaction.response.send_message("✅ Wylosowano nowych zwycięzców!", ephemeral=True)
+
+    # ---------------- Automatyczne sprawdzanie giveawayów -----------------
+    @tasks.loop(seconds=30)
+    async def check_giveaways(self):
+        data = load_giveaways()
+        ended = []
+
+        for message_id, giveaway in data.items():
+            if datetime.utcnow().timestamp() >= giveaway["end_time"]:
+                await self.end_giveaway(giveaway)
+                ended.append(message_id)
+
+        for mid in ended:
+            del data[mid]
+
+        if ended:
+            save_giveaways(data)
+
+    # ---------------- Funkcja kończąca giveaway -----------------
+    async def end_giveaway(self, giveaway, reroll=False):
+        guild = self.bot.get_guild(giveaway["guild_id"])
+        channel = guild.get_channel(giveaway["channel_id"])
+        message = await channel.fetch_message(giveaway["message_id"])
+
+        participants = giveaway["participants"]
+        prize = giveaway["prize"]
+        winners_count = giveaway["winners_count"]
+
+        if not participants:
+            await channel.send("❌ Brak uczestników w konkursie.")
+            return
+
+        if len(participants) < winners_count:
+            winners_count = len(participants)
+
+        winners = random.sample(participants, winners_count)
+        winner_mentions = " ".join([f"<@{uid}>" for uid in winners])
+
+        embed = discord.Embed(
+            title="🎉 Konkurs zakończony!",
+            description=f"**Nagroda:** {prize}\n"
+                        f"**Zwycięzcy:** {winner_mentions}",
+            color=discord.Color.red()
+        )
+        await message.edit(embed=embed, view=None)
+        await channel.send(f"🎉 Gratulacje dla {winner_mentions}! Wygrali **{prize}**!")
+
+
+# ---------------- Setup -----------------
 async def setup(bot):
     await bot.add_cog(Giveaway(bot))
