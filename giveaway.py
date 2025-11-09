@@ -290,7 +290,7 @@ def setup_giveaway(bot: commands.Bot):
     global _GLOBAL_BOT_FOR_SCHEDULER
     _GLOBAL_BOT_FOR_SCHEDULER = bot
 
-    # Przywróć widoki i zaplanuj kończenia po starcie bota
+    # ---- Funkcja asynchroniczna do przywracania giveawayów ----
     async def _restore_and_schedule():
         await bot.wait_until_ready()
         data = load_giveaways()
@@ -300,86 +300,72 @@ def setup_giveaway(bot: commands.Bot):
                 mid_int = int(mid)
             except Exception:
                 continue
-            # jeśli zakończony już to nie przywracamy widoku
             if g.get("ended"):
                 continue
-            # dodaj view (przycisk) żeby interakcje działały po restarcie
+            # dodaj view dla aktywnego giveawayu
             try:
                 bot.add_view(GiveawayView(message_id=mid_int))
             except Exception:
                 pass
-            # oblicz ile sekund do końca
-            end_ts = int(g.get("end_ts", 0))
-            remaining = end_ts - now_ts
+            remaining = int(g["end_ts"]) - now_ts
             if remaining <= 0:
-                # zakończ natychmiast (asynchronicznie)
                 asyncio.create_task(_end_giveaway_by_id(bot, mid_int, animated=False))
             else:
-                # zaplanuj zakończenie
                 asyncio.create_task(_schedule_end(mid_int, remaining))
-        print(f"✅ Przywrócono i zaplanowano {len([g for g in data.values() if not g.get('ended')])} aktywnych giveaway’ów.")
+        print(f"✅ Przywrócono {len([g for g in data.values() if not g.get('ended')])} aktywnych giveaway’ów.")
 
-    # Rejestracja komend
+    # ---- Zamiast bot.loop.create_task używamy setup_hook ----
+    async def on_setup_hook():
+        bot.tree.add_command(giveaway)
+        bot.tree.add_command(giveawayend)
+        bot.tree.add_command(giveawayreroll)
+        bot.add_view(GiveawayView(message_id=0))  # rejestrowanie persistent view
+        asyncio.create_task(_restore_and_schedule())
+
+    # Tworzymy komendy tutaj (muszą być w zasięgu setup_hook)
     @bot.tree.command(name="giveaway", description="🎉 Utwórz nowy giveaway (tylko właściciel lub admin).")
     async def giveaway(interaction: discord.Interaction):
-        # otwórz modal
         modal = GiveawayModal()
         await interaction.response.send_modal(modal)
 
     @bot.tree.command(name="giveawayend", description="⏹️ Ręcznie zakończ giveaway (tylko owner/admin).")
-    @app_commands.describe(message_id="ID wiadomości giveaway (numer wiadomości Discord)")
+    @app_commands.describe(message_id="ID wiadomości giveaway")
     async def giveawayend(interaction: discord.Interaction, message_id: str):
-        # sprawdź uprawnienia
         if not (interaction.user.id == interaction.guild.owner_id or interaction.user.guild_permissions.administrator):
-            await interaction.response.send_message("⛔ Brak uprawnień.", ephemeral=True)
-            return
+            return await interaction.response.send_message("⛔ Brak uprawnień.", ephemeral=True)
         try:
             mid = int(message_id)
         except:
-            await interaction.response.send_message("❌ Nieprawidłowy message_id.", ephemeral=True)
-            return
-        res = await _end_giveaway_by_id(bot, mid, animated=True)
+            return await interaction.response.send_message("❌ Nieprawidłowy ID.", ephemeral=True)
+        res = await _end_giveaway_by_id(bot, mid)
         if res:
-            await interaction.response.send_message(f"✅ Giveaway `{message_id}` został zakończony.", ephemeral=True)
+            await interaction.response.send_message(f"✅ Giveaway `{message_id}` zakończony.", ephemeral=True)
         else:
-            await interaction.response.send_message("⚠️ Nie znaleziono lub nie można zakończyć giveawayu.", ephemeral=True)
+            await interaction.response.send_message("⚠️ Nie znaleziono giveawayu.", ephemeral=True)
 
     @bot.tree.command(name="giveawayreroll", description="🔁 Wylosuj nowego zwycięzcę (tylko owner/admin).")
-    @app_commands.describe(message_id="ID wiadomości giveaway (numer wiadomości Discord)")
+    @app_commands.describe(message_id="ID wiadomości giveaway")
     async def giveawayreroll(interaction: discord.Interaction, message_id: str):
         if not (interaction.user.id == interaction.guild.owner_id or interaction.user.guild_permissions.administrator):
-            await interaction.response.send_message("⛔ Brak uprawnień.", ephemeral=True)
-            return
+            return await interaction.response.send_message("⛔ Brak uprawnień.", ephemeral=True)
         try:
             mid = int(message_id)
         except:
-            await interaction.response.send_message("❌ Nieprawidłowy message_id.", ephemeral=True)
-            return
+            return await interaction.response.send_message("❌ Nieprawidłowy ID.", ephemeral=True)
         data = load_giveaways()
         g = data.get(str(mid))
         if not g:
-            await interaction.response.send_message("❌ Nie znaleziono giveawayu.", ephemeral=True)
-            return
-        participants = g.get("participants", [])
-        if not participants:
-            await interaction.response.send_message("⚠️ Brak uczestników.", ephemeral=True)
-            return
-        winners_count = int(g.get("winners_count", 1))
-        # losuj nowego zwycięzcę
-        new_winner = random.choice(participants)
-        # zapis do winners (dorzucamy)
-        g_winners = g.get("winners", [])
-        if str(new_winner) not in g_winners:
-            g_winners.append(str(new_winner))
-        g["winners"] = g_winners
-        save_giveaways(data)
+            return await interaction.response.send_message("❌ Nie znaleziono giveawayu.", ephemeral=True)
+        if not g.get("participants"):
+            return await interaction.response.send_message("⚠️ Brak uczestników.", ephemeral=True)
+        new_winner = random.choice(g["participants"])
         winner_user = await bot.fetch_user(int(new_winner))
-        await interaction.response.send_message(f"🎉 Nowy zwycięzca: {winner_user.mention}", ephemeral=False)
+        await interaction.response.send_message(f"🎉 Nowy zwycięzca: {winner_user.mention}")
 
-    # Uruchom restore task
-    bot.loop.create_task(_restore_and_schedule())
+    # Przypisz hook do bota
+    bot.setup_hook = on_setup_hook
+    print("✅ Giveaway module ready (hook registered).")
 
-    print("✅ Giveaway module loaded (komendy: /giveaway, /giveawayend, /giveawayreroll).")
 
 # Exporty (przydatne jeśli main.py chce dodać widoki ręcznie)
 __all__ = ["setup_giveaway", "load_giveaways", "GiveawayView"]
