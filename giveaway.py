@@ -5,31 +5,43 @@ import asyncio
 import json
 import os
 from datetime import datetime, timedelta
+import re
 import random
 
-# --- STAŁE ---
+# 🔹 Plik zapisu aktywnych giveawayów
 GIVEAWAY_FILE = "giveaways.json"
 
 
-# --- FUNKCJE POMOCNICZE ---
-
+# ---------------------- FUNKCJE POMOCNICZE -----------------------
 def load_giveaways():
     if os.path.exists(GIVEAWAY_FILE):
-        try:
-            with open(GIVEAWAY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            return {}
+        with open(GIVEAWAY_FILE, "r") as f:
+            return json.load(f)
     return {}
 
 
 def save_giveaways(data):
-    with open(GIVEAWAY_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    with open(GIVEAWAY_FILE, "w") as f:
+        json.dump(data, f, indent=4)
 
 
-# --- KLASA WIDOKU ---
+def parse_time(time_str: str):
+    """Konwertuje '2d', '5h', '30m' → sekundy"""
+    match = re.match(r"^(\d+)([dhm])$", time_str.lower())
+    if not match:
+        return None
+    value, unit = match.groups()
+    value = int(value)
+    if unit == "d":
+        return value * 86400
+    if unit == "h":
+        return value * 3600
+    if unit == "m":
+        return value * 60
+    return None
 
+
+# ---------------------- WIDOK (PRZYCISK) -----------------------
 class GiveawayView(discord.ui.View):
     def __init__(self, message_id: int):
         super().__init__(timeout=None)
@@ -44,28 +56,30 @@ class GiveawayView(discord.ui.View):
             return await interaction.response.send_message("❌ Ten giveaway już się zakończył!", ephemeral=True)
 
         if str(interaction.user.id) in g["participants"]:
-            return await interaction.response.send_message("⚠️ Już bierzesz udział w tym giveawayu!", ephemeral=True)
+            return await interaction.response.send_message("Już jesteś zapisany na ten giveaway! 🎁", ephemeral=True)
 
         g["participants"].append(str(interaction.user.id))
         save_giveaways(giveaways)
         await interaction.response.send_message("✅ Dołączyłeś do giveaway’a!", ephemeral=True)
 
 
-# --- FUNKCJE GIVEAWAY ---
+# ---------------------- LOGIKA GIVEAWAY -----------------------
+async def start_giveaway(bot, interaction, czas: str, nagroda: str, opis: str, naglowek: str):
+    seconds = parse_time(czas)
+    if not seconds:
+        return await interaction.response.send_message("❌ Nieprawidłowy format czasu! Użyj np. `2d`, `5h`, `30m`.", ephemeral=True)
 
-async def start_giveaway(bot, interaction: discord.Interaction, czas_minuty: int, nagroda: str):
-    end_time = datetime.utcnow() + timedelta(minutes=czas_minuty)
+    end_time = datetime.utcnow() + timedelta(seconds=seconds)
 
     embed = discord.Embed(
-        title="🎉 GIVEAWAY 🎉",
-        description=f"**Nagroda:** {nagroda}\nKliknij przycisk poniżej, aby dołączyć!",
-        color=discord.Color.gold()
+        title=f"🎉 {naglowek} 🎉",
+        description=f"**Nagroda:** {nagroda}\n\n{opis}\n\n🕒 **Koniec:** <t:{int(end_time.timestamp())}:R>",
+        color=discord.Color.from_rgb(46, 204, 113),  # zielony jak panel ticketów
     )
-    embed.add_field(name="⏰ Czas trwania", value=f"{czas_minuty} minut", inline=False)
-    embed.set_footer(text=f"Zakończenie: {end_time:%Y-%m-%d %H:%M UTC}")
+    embed.set_footer(text=f"Giveaway zakończy się {end_time:%Y-%m-%d %H:%M UTC}")
 
     message = await interaction.channel.send(embed=embed, view=GiveawayView(message_id=0))
-    await interaction.response.send_message(f"🎁 Giveaway wystartował! Nagroda: **{nagroda}**", ephemeral=True)
+    await interaction.response.send_message(f"✅ Giveaway wystartował: **{nagroda}**", ephemeral=True)
 
     giveaways = load_giveaways()
     giveaways[str(message.id)] = {
@@ -73,13 +87,13 @@ async def start_giveaway(bot, interaction: discord.Interaction, czas_minuty: int
         "end_time": end_time.isoformat(),
         "reward": nagroda,
         "participants": [],
+        "naglowek": naglowek,
+        "opis": opis
     }
     save_giveaways(giveaways)
 
     bot.add_view(GiveawayView(message_id=message.id))
-
-    # Odliczanie czasu
-    await asyncio.sleep(czas_minuty * 60)
+    await asyncio.sleep(seconds)
     await end_giveaway(bot, message.id)
 
 
@@ -87,82 +101,70 @@ async def end_giveaway(bot, message_id: int, manual=False):
     giveaways = load_giveaways()
     g = giveaways.pop(str(message_id), None)
     if not g:
-        return False
+        return
 
     save_giveaways(giveaways)
-
     channel = bot.get_channel(g["channel_id"])
-    if not channel:
-        return False
-
-    try:
-        message = await channel.fetch_message(message_id)
-    except Exception:
-        return False
+    message = await channel.fetch_message(message_id)
 
     if not g["participants"]:
-        await channel.send("😢 Giveaway zakończony — nikt nie wziął udziału.")
-        return True
+        await channel.send("😢 Giveaway zakończony, ale nikt nie wziął udziału.")
+        return
 
     winner_id = int(random.choice(g["participants"]))
     winner = await bot.fetch_user(winner_id)
-    await channel.send(f"🎉 Gratulacje {winner.mention}! Wygrałeś **{g['reward']}** 🥳")
 
     embed = message.embeds[0]
-    embed.title = "✅ GIVEAWAY ZAKOŃCZONY ✅"
-    embed.color = discord.Color.green()
+    embed.title = f"✅ GIVEAWAY ZAKOŃCZONY ✅"
+    embed.description += f"\n\n🎉 **Zwycięzca:** {winner.mention}"
     await message.edit(embed=embed, view=None)
-    return True
+
+    await channel.send(f"🎊 Gratulacje {winner.mention}! Wygrałeś **{g['reward']}**! 🥳")
 
 
-async def reroll_giveaway(bot, message_id: int):
-    giveaways = load_giveaways()
-    g = giveaways.get(str(message_id))
-    if not g or not g["participants"]:
-        return None
-
-    winner_id = int(random.choice(g["participants"]))
-    winner = await bot.fetch_user(winner_id)
-    return winner
-
-
-# --- GŁÓWNA FUNKCJA SETUP ---
-
+# ---------------------- REJESTRACJA KOMEND -----------------------
 def setup_giveaway(bot: commands.Bot):
-    @bot.tree.command(name="giveaway", description="🎁 Utwórz nowy giveaway (tylko admin)")
-    @app_commands.describe(czas_minuty="Czas trwania w minutach", nagroda="Nagroda giveaway’a")
-    async def giveaway(interaction: discord.Interaction, czas_minuty: int, nagroda: str):
-        if not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("⛔ Tylko administrator może uruchomić giveaway.", ephemeral=True)
-        await start_giveaway(bot, interaction, czas_minuty, nagroda)
+    @bot.tree.command(name="giveaway", description="🎉 Utwórz giveaway")
+    @app_commands.describe(
+        czas="Czas trwania (np. 2d = 2 dni, 5h = 5 godzin, 30m = 30 minut)",
+        nagroda="Nagroda giveaway’a",
+        naglowek="Tytuł / temat giveaway’a",
+        opis="Opis, np. zasady, wymagania itd."
+    )
+    async def giveaway(interaction: discord.Interaction, czas: str, nagroda: str, naglowek: str, opis: str):
+        if not interaction.user.guild_permissions.administrator and interaction.user.id != interaction.guild.owner_id:
+            return await interaction.response.send_message("⛔ Tylko właściciel lub administrator serwera może to zrobić.", ephemeral=True)
 
-    @bot.tree.command(name="endgiveaway", description="🛑 Ręcznie zakończ giveaway (tylko admin)")
-    @app_commands.describe(message_id="ID wiadomości giveawayu do zakończenia")
-    async def end_giveaway_command(interaction: discord.Interaction, message_id: str):
-        if not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("⛔ Tylko administrator może zakończyć giveaway.", ephemeral=True)
-        result = await end_giveaway(bot, int(message_id), manual=True)
-        if result:
-            await interaction.response.send_message(f"✅ Giveaway `{message_id}` został zakończony.", ephemeral=True)
-        else:
-            await interaction.response.send_message("⚠️ Nie znaleziono giveawayu o podanym ID.", ephemeral=True)
+        await start_giveaway(bot, interaction, czas, nagroda, opis, naglowek)
 
-    @bot.tree.command(name="rerollgiveaway", description="🔁 Wylosuj nowego zwycięzcę (tylko admin)")
-    @app_commands.describe(message_id="ID wiadomości giveawayu do ponownego losowania")
-    async def reroll_giveaway_command(interaction: discord.Interaction, message_id: str):
-        if not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("⛔ Tylko administrator może losować ponownie.", ephemeral=True)
-        winner = await reroll_giveaway(bot, int(message_id))
-        if winner:
-            await interaction.response.send_message(f"🎉 Nowy zwycięzca: {winner.mention}", ephemeral=False)
-        else:
-            await interaction.response.send_message("⚠️ Nie można było wylosować nowego zwycięzcy.", ephemeral=True)
+    @bot.tree.command(name="giveawayend", description="⏹️ Ręcznie zakończ giveaway")
+    @app_commands.describe(message_id="ID wiadomości giveaway’a do zakończenia")
+    async def giveawayend(interaction: discord.Interaction, message_id: str):
+        if not interaction.user.guild_permissions.administrator and interaction.user.id != interaction.guild.owner_id:
+            return await interaction.response.send_message("⛔ Brak uprawnień.", ephemeral=True)
 
-    # Przywracanie aktywnych giveawayów po restarcie
+        await end_giveaway(bot, int(message_id), manual=True)
+        await interaction.response.send_message("✅ Giveaway został zakończony ręcznie.", ephemeral=True)
+
+    @bot.tree.command(name="giveawayreroll", description="🔁 Wylosuj nowego zwycięzcę")
+    @app_commands.describe(message_id="ID wiadomości giveaway’a do rerollu")
+    async def giveawayreroll(interaction: discord.Interaction, message_id: str):
+        giveaways = load_giveaways()
+        g = giveaways.get(str(message_id))
+        if not g:
+            return await interaction.response.send_message("❌ Giveaway nie został znaleziony lub już zakończony.", ephemeral=True)
+
+        if not g["participants"]:
+            return await interaction.response.send_message("😢 Nikt nie brał udziału w giveawayu.", ephemeral=True)
+
+        winner_id = int(random.choice(g["participants"]))
+        winner = await bot.fetch_user(winner_id)
+        await interaction.response.send_message(f"🎉 Nowy zwycięzca: {winner.mention} (Nagroda: **{g['reward']}**)", ephemeral=False)
+
+    # Przywrócenie widoków po restarcie
     @bot.event
     async def on_ready():
         giveaways = load_giveaways()
         for message_id in giveaways.keys():
             bot.add_view(GiveawayView(message_id=int(message_id)))
         print(f"✅ Przywrócono {len(giveaways)} aktywnych giveaway’ów.")
-
