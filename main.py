@@ -7,7 +7,6 @@ import asyncio
 from flask import Flask
 from threading import Thread
 
-# ---------------- MINI SERWER (Replit + UptimeRobot) ----------------
 app = Flask('')
 
 @app.route('/')
@@ -171,11 +170,17 @@ async def status(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="ping", description="Sprawdza opóźnienie bota (ping).")
+@bot.tree.command(name="ping", description="Sprawdź ping bota")
 async def ping(interaction: discord.Interaction):
-    latency = round(bot.latency * 1000)
-    embed = discord.Embed(title="🏓 Pong!", description=f"🔹 Opóźnienie bota: **{latency}ms**", color=discord.Color.blue())
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.defer(ephemeral=True)  # "thinking..." — daje ci więcej czasu
+
+    embed = discord.Embed(
+        title="🏓 Pong!",
+        description=f"Opóźnienie: `{round(bot.latency * 1000)}ms`",
+        color=discord.Color.green()
+    )
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
 # -------------------------------------------------------------------
 # --- KOMENDA /ticketpanel2 (FINALNA, WSZYSTKO W JEDNEJ KATEGORII) ---
 from discord.ui import View, Button, Modal, TextInput
