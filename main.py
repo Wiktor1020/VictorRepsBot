@@ -213,7 +213,7 @@ async def ping(interaction: discord.Interaction):
 # -------------------------------------------------------------------
 
 # --- RESZTA KODU (ticketpanel2, powitania itd.) zostaje bez zmian ---
-# --------------------------------------------------------------
+# -------------------------------------------------------------- 
 
 def keep_alive():
     t = Thread(target=run)
