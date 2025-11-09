@@ -7,6 +7,11 @@ import asyncio
 from flask import Flask
 from threading import Thread
 
+# 🔹 Import giveaway logic (osobny plik)
+from giveaway import setup_giveaway
+
+# --------------------------------------------------------------
+# MINI SERWER DLA RENDER / KEEP-ALIVE
 app = Flask('')
 
 @app.route('/')
@@ -15,18 +20,47 @@ def home():
 
 def run():
     app.run(host='0.0.0.0', port=8080)
-def keep_alive():
- t = Thread(target=run)
- t.start()
-# -------------------------------------------------------------------
 
-# ---------------- INTENTY I BOT -----------------------------------
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+# --------------------------------------------------------------
+# INTENTY I INICJALIZACJA BOTA
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# 🔹 Inicjalizujemy giveaway system (komendy + restore po restarcie)
+setup_giveaway(bot)
+
+# --------------------------------------------------------------
+# EVENT: BOT GOTOWY
+@bot.event
+async def on_ready():
+    print(f"✅ Zalogowano jako {bot.user}")
+
+    # Synchronizacja slash-komend
+    try:
+        synced = await bot.tree.sync()
+        print(f"Slash-komendy zsynchronizowane: {len(synced)}")
+    except Exception as e:
+        print(f"Błąd synchronizacji komend: {e}")
+
+    # 🔹 Rejestracja persistent view dla panelu ticketów
+    try:
+        from main import TicketPanel  # jeśli TicketPanel jest niżej w pliku
+        bot.add_view(TicketPanel())
+        print("✅ Persistent TicketPanel view dodany (działa po restarcie).")
+    except Exception as e:
+        print(f"⚠️ Nie udało się dodać TicketPanel: {e}")
+
+    print("✅ Bot w pełni gotowy do pracy.")
+# --------------------------------------------------------------
+
 # -------------------------------------------------------------------
 
 # ----------------- NARZĘDZIA UŻYTKOWE ------------------------------
