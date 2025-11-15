@@ -25,8 +25,11 @@ def load_giveaways():
         return {}
 
 def save_giveaways(data):
-    with open(GIVEAWAYS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    try:
+        with open(GIVEAWAYS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+    except Exception:
+        pass
 
 def parse_duration(s: str):
     """Parsuje np. 10m, 2h, 1d -> liczba sekund lub None."""
@@ -62,14 +65,11 @@ def human_time(seconds: int):
 # ---------------- persistent view for a single giveaway message ----------------
 class GiveawayView(discord.ui.View):
     def __init__(self, message_id: int):
-        # timeout=None -> persistent
         super().__init__(timeout=None)
         self.message_id = int(message_id)
-
-        # create a persistent button with custom_id including message id
+        # persistent button with stable custom_id
         custom = f"giveaway_join:{self.message_id}"
         btn = discord.ui.Button(label="🎟️ Weź udział", style=discord.ButtonStyle.secondary, custom_id=custom)
-        # bind callback
         async def _callback(interaction: discord.Interaction):
             await self._on_join(interaction)
         btn.callback = _callback
@@ -190,7 +190,7 @@ class GiveawayCog(commands.Cog):
             msg = await interaction.channel.send(embed=embed, view=view)
             # teraz przypisz prawdziwe id do view i zarejestruj
             view.message_id = msg.id
-            # zarejestruj persistent view (ważne, żeby przy restarcie Bot.add_view było wywołane dla tej custom_id)
+            # zarejestruj persistent view
             self.parent.bot.add_view(GiveawayView(msg.id))
 
             # zapisz do pliku
@@ -257,7 +257,6 @@ class GiveawayCog(commands.Cog):
             await interaction.response.send_message("⚠️ Brak dostępnych uczestników do ponownego losowania.", ephemeral=True)
             return
         new = random.choice(possible)
-        # zastąp pierwszego poprzedniego (albo dopisz)
         replaced = previous[0] if previous else None
         if replaced:
             g["winners"].remove(replaced)
