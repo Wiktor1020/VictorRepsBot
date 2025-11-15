@@ -6,7 +6,7 @@ import asyncio
 import json
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 import random
 import re
 
@@ -171,7 +171,6 @@ class GiveawayCog(commands.Cog):
                 return
 
             end_ts = int(time.time()) + seconds
-            end_dt = datetime.utcfromtimestamp(end_ts)
 
             embed = discord.Embed(
                 title=f"🎉 {self.title_input.value}",
@@ -296,7 +295,6 @@ class GiveawayCog(commands.Cog):
                 to_finish.append(int(mid))
         for mid in to_finish:
             await self._finish_giveaway(mid)
-            # mark finished in file inside _finish_giveaway
 
     @check_loop.before_loop
     async def before_check(self):
