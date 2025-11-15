@@ -7,6 +7,9 @@ from flask import Flask
 from threading import Thread
 from datetime import datetime
 
+from giveaway import GiveawayView  # <<< NAJWAŻNIEJSZE
+import json
+
 # ------------------ CONFIG ------------------
 TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN")
 INTENTS = discord.Intents.all()
@@ -30,6 +33,29 @@ def keep_alive():
 
 keep_alive()
 
+
+# ------------------ PRZYWRACANIE PERSISTENT VIEW ------------------
+def restore_giveaway_views():
+    if not os.path.exists("giveaways.json"):
+        return
+
+    try:
+        with open("giveaways.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except:
+        return
+
+    restored = 0
+    for msg_id, g in data.items():
+        if g.get("ended"):
+            continue
+
+        bot.add_view(GiveawayView(int(msg_id)))
+        restored += 1
+
+    print(f"🔁 Przywrócono {restored} persistent view dla giveawayów.")
+
+
 # ------------------ EVENT: on_ready ------------------
 @bot.event
 async def on_ready():
@@ -38,6 +64,8 @@ async def on_ready():
         print(f"✅ Zsynchronizowano {len(synced)} komend.")
     except Exception as e:
         print("Błąd synchronizacji:", e)
+
+    bot.loop.create_task(asyncio.to_thread(restore_giveaway_views))
 
     await bot.change_presence(
         activity=discord.Game(name="VictorReps | system premium")
@@ -63,4 +91,3 @@ async def main():
 
 # ------------------ START BOTA ------------------
 asyncio.run(main())
-
