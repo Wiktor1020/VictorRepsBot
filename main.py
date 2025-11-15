@@ -1,17 +1,18 @@
 import discord
-from discord import app_commands
 from discord.ext import commands
+from discord import app_commands
 import json
 import os
 import asyncio
 from flask import Flask
 from threading import Thread
 
-# 🔹 Import giveaway logic (osobny plik)
+# 🔹 Import giveaway logic
 from giveaway import setup_giveaway, load_giveaways, GiveawayView
 
+
 # --------------------------------------------------------------
-# MINI SERWER DLA RENDER / KEEP-ALIVE
+# ➤ MINI SERWER KEEP-ALIVE (Render / UptimeRobot)
 app = Flask('')
 
 @app.route('/')
@@ -25,8 +26,9 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
+
 # --------------------------------------------------------------
-# INTENTY I INICJALIZACJA BOTA
+# ➤ INTENTY I KONSTRUKTOR BOTA
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
@@ -34,45 +36,56 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# 🔹 Inicjalizujemy giveaway system (komendy + restore po restarcie)
-setup_giveaway(bot)
 
 # --------------------------------------------------------------
-# EVENT: BOT GOTOWY
+# ➤ ŁADOWANIE ROZSZERZEŃ (ticketpanel)
+@bot.event
+async def setup_hook():
+    # 🔥 TicketPanel jako extension
+    await bot.load_extension("ticketpanel")
+
+
+# --------------------------------------------------------------
+# ➤ SETUP GIVEAWAY SYSTEMU
+setup_giveaway(bot)
+
+
+# --------------------------------------------------------------
+# ➤ EVENT ON_READY
 @bot.event
 async def on_ready():
     print(f"✅ Zalogowano jako {bot.user}")
 
-    # Synchronizacja slash-komend
+    # 🔥 Rejestrujemy persistent view (TicketPanel z ticketpanel.py)
+    try:
+        from ticketpanel import TicketPanel
+        bot.add_view(TicketPanel())
+        print("✅ Persistent TicketPanel view załadowany.")
+    except Exception as e:
+        print(f"⚠️ Błąd dodawania TicketPanel: {e}")
+
+    # 🔥 Przywracamy aktywne giveaway'e
+    try:
+        giveaways = load_giveaways()
+        for message_id in giveaways.keys():
+            bot.add_view(GiveawayView(message_id=int(message_id)))
+        print(f"✅ Przywrócono {len(giveaways)} giveaway'ów.")
+    except Exception as e:
+        print(f"⚠️ Błąd przywracania giveaway'ów: {e}")
+
+    # 🔥 Synchronizacja slash-komend
     try:
         synced = await bot.tree.sync()
         print(f"Slash-komendy zsynchronizowane: {len(synced)}")
     except Exception as e:
         print(f"Błąd synchronizacji komend: {e}")
 
-    # 🔹 Rejestracja persistent view dla panelu ticketów
-    try:
-        from main import TicketPanel  # jeśli TicketPanel jest niżej w pliku
-        bot.add_view(TicketPanel())
-        print("✅ Persistent TicketPanel view dodany (działa po restarcie).")
-    except Exception as e:
-        print(f"⚠️ Nie udało się dodać TicketPanel: {e}")
+    print("🚀 Bot w pełni gotowy!")
 
-    # 🔹 Przywracanie aktywnych giveaway’ów po restarcie
-    try:
-        giveaways = load_giveaways()
-        for message_id in giveaways.keys():
-            bot.add_view(GiveawayView(message_id=int(message_id)))
-        print(f"✅ Przywrócono {len(giveaways)} aktywnych giveaway’ów.")
-    except Exception as e:
-        print(f"⚠️ Błąd przywracania giveaway’ów: {e}")
 
-    print("✅ Bot w pełni gotowy do pracy.")
 # --------------------------------------------------------------
-
-# ----------------- NARZĘDZIA UŻYTKOWE ------------------------------
+# ➤ UPRAWNIENIA: tylko owner/admin
 def is_owner(interaction: discord.Interaction) -> bool:
-    """Zwraca True, jeśli użytkownik to właściciel serwera lub administrator."""
     if not interaction.guild:
         return False
     return (
@@ -80,6 +93,9 @@ def is_owner(interaction: discord.Interaction) -> bool:
         or interaction.user.guild_permissions.administrator
     )
 
+
+# --------------------------------------------------------------
+# ➤ STYLIZACJA KANAŁÓW
 channel_emojis = {
     "czat": "💬",
     "pytania": "❓",
@@ -96,8 +112,7 @@ channel_emojis = {
 def stylize_text(text):
     normal = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
     fancy = "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    table = str.maketrans(normal, fancy)
-    return text.translate(table)
+    return text.translate(str.maketrans(normal, fancy))
 
 def save_backup(guild):
     data = {str(channel.id): channel.name for channel in guild.channels}
@@ -109,16 +124,18 @@ def load_backup():
         return {}
     with open("kanaly_backup.json", "r", encoding="utf-8") as f:
         return json.load(f)
-# -------------------------------------------------------------------
 
-# ------------------ KOMENDY STYLIZACJI ------------------------------
+
+# --------------------------------------------------------------
+# ➤ KOMENDY /stylizujkanaly /stylizujkategorie /przywroc_kanaly
+
 @bot.tree.command(name="stylizujkanaly", description="Stylizuje wszystkie kanały serwera.")
 async def stylizujkanaly(interaction: discord.Interaction):
     if not is_owner(interaction):
-        await interaction.response.send_message("⛔ Nie masz uprawnień do tej komendy.", ephemeral=True)
+        await interaction.response.send_message("⛔ Nie masz uprawnień.", ephemeral=True)
         return
 
-    await interaction.response.send_message("✨ Stylizowanie kanałów...", ephemeral=True)
+    await interaction.response.send_message("✨ Stylizowanie...", ephemeral=True)
     save_backup(interaction.guild)
 
     for channel in interaction.guild.channels:
@@ -135,12 +152,13 @@ async def stylizujkanaly(interaction: discord.Interaction):
         except Exception as e:
             print(f"Błąd przy {channel.name}: {e}")
 
-    await interaction.followup.send("✅ Kanały zostały wystylizowane!", ephemeral=True)
+    await interaction.followup.send("✅ Kanały wystylizowane!", ephemeral=True)
+
 
 @bot.tree.command(name="stylizujkategorie", description="Stylizuje wszystkie kategorie.")
 async def stylizujkategorie(interaction: discord.Interaction):
     if not is_owner(interaction):
-        await interaction.response.send_message("⛔ Nie masz uprawnień do tej komendy.", ephemeral=True)
+        await interaction.response.send_message("⛔ Brak uprawnień.", ephemeral=True)
         return
 
     await interaction.response.send_message("✨ Stylizowanie kategorii...", ephemeral=True)
@@ -152,22 +170,24 @@ async def stylizujkategorie(interaction: discord.Interaction):
             await category.edit(name=new_name)
             await asyncio.sleep(1)
         except Exception as e:
-            print(f"Błąd przy kategorii {category.name}: {e}")
+            print(f"Błąd kategorii {category.name}: {e}")
 
-    await interaction.followup.send("✅ Kategorie zostały wystylizowane!", ephemeral=True)
+    await interaction.followup.send("✅ Kategorie wystylizowane!", ephemeral=True)
 
-@bot.tree.command(name="przywroc_kanaly", description="Przywraca pierwotne nazwy kanałów z backupu.")
+
+@bot.tree.command(name="przywroc_kanaly", description="Przywraca pierwotne nazwy kanałów.")
 async def przywroc_kanaly(interaction: discord.Interaction):
     if not is_owner(interaction):
-        await interaction.response.send_message("⛔ Nie masz uprawnień do tej komendy.", ephemeral=True)
+        await interaction.response.send_message("⛔ Brak uprawnień.", ephemeral=True)
         return
 
     backup = load_backup()
     if not backup:
-        await interaction.response.send_message("⚠️ Brak zapisanych nazw do przywrócenia.", ephemeral=True)
+        await interaction.response.send_message("⚠️ Brak backupu.", ephemeral=True)
         return
 
-    await interaction.response.send_message("♻️ Przywracanie nazw kanałów...", ephemeral=True)
+    await interaction.response.send_message("♻️ Przywracanie...", ephemeral=True)
+
     for channel in interaction.guild.channels:
         if str(channel.id) in backup:
             try:
@@ -176,10 +196,12 @@ async def przywroc_kanaly(interaction: discord.Interaction):
             except Exception as e:
                 print(f"Błąd przywracania {channel.name}: {e}")
 
-    await interaction.followup.send("✅ Kanały zostały przywrócone!", ephemeral=True)
-# -------------------------------------------------------------------
+    await interaction.followup.send("✅ Przywrócono!", ephemeral=True)
 
-# ------------------ KOMENDY STATUS / PING ---------------------------
+
+# --------------------------------------------------------------
+# ➤ STATUS / PING
+
 @bot.tree.command(name="status", description="Sprawdź, czy bot działa.")
 async def status(interaction: discord.Interaction):
     if not is_owner(interaction):
@@ -187,40 +209,32 @@ async def status(interaction: discord.Interaction):
         return
 
     owner = interaction.guild.get_member(interaction.guild.owner_id)
-    owner_display = owner.mention if owner else "👑 Właściciel nieznany"
+    owner_display = owner.mention if owner else "Nieznany"
 
     embed = discord.Embed(
-        title="✅ VictorReps działa poprawnie!",
-        description="Bot jest aktywny i gotowy do działania.",
+        title="✅ VictorReps działa!",
+        description="Bot jest aktywny.",
         color=discord.Color.green()
     )
-    embed.add_field(name="🖥️ Serwer", value=interaction.guild.name, inline=True)
-    embed.add_field(name="👑 Właściciel", value=owner_display, inline=True)
-    embed.set_footer(text="VictorReps Bot | Status")
+    embed.add_field(name="Serwer", value=interaction.guild.name)
+    embed.add_field(name="Owner", value=owner_display)
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="ping", description="Sprawdź ping bota")
+
+@bot.tree.command(name="ping", description="Sprawdza ping bota.")
 async def ping(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-
     embed = discord.Embed(
         title="🏓 Pong!",
-        description=f"Opóźnienie: `{round(bot.latency * 1000)}ms`",
+        description=f"Ping: `{round(bot.latency * 1000)}ms`",
         color=discord.Color.green()
     )
     await interaction.followup.send(embed=embed, ephemeral=True)
-# -------------------------------------------------------------------
 
-# --- RESZTA KODU (ticketpanel2, powitania itd.) zostaje bez zmian ---
-# -------------------------------------------------------------- 
 
-def keep_alive():
-    t = Thread(target=run)
-    t.start()
-
+# --------------------------------------------------------------
+# ➤ KEEP ALIVE + START
 keep_alive()
-
-# ------------------ URUCHOMIENIE BOTA -------------------------------
 bot.run(os.environ.get("DISCORD_TOKEN") or os.environ.get("TOKEN"))
-# -------------------------------------------------------------------
+
