@@ -12,9 +12,8 @@ import re
 
 GIVEAWAYS_FILE = "giveaways.json"
 EMBED_COLOR = discord.Color.from_str("#CC0000")
-CHECK_INTERVAL = 15  # co ile sekund sprawdzać giveaway'e
+CHECK_INTERVAL = 15  # seconds
 
-# ---------------- helpers ----------------
 def load_giveaways():
     if not os.path.exists(GIVEAWAYS_FILE):
         return {}
@@ -32,7 +31,6 @@ def save_giveaways(data):
         pass
 
 def parse_duration(s: str):
-    """Parsuje np. 10m, 2h, 1d -> liczba sekund lub None."""
     if not s:
         return None
     s = s.strip().lower()
@@ -49,35 +47,24 @@ def parse_duration(s: str):
         return val * 86400
     return None
 
-def human_time(seconds: int):
-    seconds = int(seconds)
-    d, rem = divmod(seconds, 86400)
-    h, rem = divmod(rem, 3600)
-    m, s = divmod(rem, 60)
-    if d:
-        return f"{d}d {h}h {m}m"
-    if h:
-        return f"{h}h {m}m"
-    if m:
-        return f"{m}m {s}s"
-    return f"{s}s"
-
-# ---------------- persistent view for a single giveaway message ----------------
+# ---------------- persistent view (static custom_id) ----------------
 class GiveawayView(discord.ui.View):
-    def __init__(self, message_id: int):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.message_id = int(message_id)
-        # persistent button with stable custom_id
-        custom = f"giveaway_join:{self.message_id}"
-        btn = discord.ui.Button(label="🎟️ Weź udział", style=discord.ButtonStyle.secondary, custom_id=custom)
-        async def _callback(interaction: discord.Interaction):
-            await self._on_join(interaction)
-        btn.callback = _callback
+        # persistent static custom_id
+        btn = discord.ui.Button(label="🎟️ Weź udział", style=discord.ButtonStyle.secondary, custom_id="giveaway_join")
+        btn.callback = self._on_join
         self.add_item(btn)
 
     async def _on_join(self, interaction: discord.Interaction):
+        # use interaction.message.id to identify which giveaway
+        msg = interaction.message
+        if not msg:
+            await interaction.response.send_message("⚠️ Błąd — nie znaleziono wiadomości.", ephemeral=True)
+            return
+        mid = str(msg.id)
         data = load_giveaways()
-        g = data.get(str(self.message_id))
+        g = data.get(mid)
         if not g or g.get("ended"):
             await interaction.response.send_message("⚠️ Ten giveaway już się zakończył.", ephemeral=True)
             return
@@ -90,27 +77,21 @@ class GiveawayView(discord.ui.View):
         g["participants"].append(uid)
         save_giveaways(data)
 
-        # update embed participants count if message exists
+        # update embed participants count
         try:
-            bot = interaction.client
-            channel = bot.get_channel(g["channel_id"])
-            if channel:
-                msg = await channel.fetch_message(self.message_id)
-                if msg and msg.embeds:
-                    embed = msg.embeds[0]
-                    desc_lines = embed.description.split("\n")
-                    for i, line in enumerate(desc_lines):
-                        if line.startswith("📊"):
-                            desc_lines[i] = f"📊 **Uczestnicy:** {len(g['participants'])}"
-                    embed.description = "\n".join(desc_lines)
-                    await msg.edit(embed=embed, view=self)
+            embed = msg.embeds[0]
+            desc_lines = embed.description.split("\n")
+            for i, line in enumerate(desc_lines):
+                if line.startswith("📊"):
+                    desc_lines[i] = f"📊 **Uczestnicy:** {len(g['participants'])}"
+            embed.description = "\n".join(desc_lines)
+            await msg.edit(embed=embed, view=self)
         except Exception:
             pass
 
         await interaction.response.send_message("✅ Dołączyłeś do giveawayu!", ephemeral=True)
 
 
-# ---------------- Cog ----------------
 class GiveawayCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -121,28 +102,24 @@ class GiveawayCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        # zarejestruj persistent views dla aktywnych giveawayów
-        data = load_giveaways()
-        restored = 0
-        for mid, g in data.items():
-            try:
-                if not g.get("ended"):
-                    self.bot.add_view(GiveawayView(int(mid)))
-                    restored += 1
-            except Exception:
-                pass
-        print(f"✅ Giveaway: przywrócono persistent views dla {restored} konkursów.")
+        # register persistent view (static custom_id) once so buttons work after restart
+        try:
+            self.bot.add_view(GiveawayView())
+        except Exception:
+            pass
 
-    # ---------------- modal do tworzenia giveaway ----------------
+        print("✅ Giveaway cog ready — persistent view zarejestrowany.")
+        # no need to re-add per message: button uses interaction.message.id
+
     class _CreateModal(discord.ui.Modal, title="🎉 Utwórz Giveaway"):
         def __init__(self, parent: "GiveawayCog"):
             super().__init__(timeout=None)
             self.parent = parent
-            self.title_input = discord.ui.TextInput(label="🏷️ Nazwa/tytuł giveawayu", placeholder="Np. Wygraj Discord Nitro!", max_length=100, required=True)
-            self.desc_input = discord.ui.TextInput(label="📝 Opis (zasady)", style=discord.TextStyle.paragraph, placeholder="Opis nagrody i zasad", max_length=600, required=True)
-            self.reward_input = discord.ui.TextInput(label="🎁 Nagroda", placeholder="Np. Discord Nitro", max_length=100, required=True)
-            self.duration_input = discord.ui.TextInput(label="⏱️ Czas (np. 10m, 2h, 1d)", placeholder="10m = 10 minut", max_length=6, required=True)
-            self.winners_input = discord.ui.TextInput(label="🎉 Liczba zwycięzców", placeholder="Np. 1", max_length=2, required=True)
+            self.title_input = discord.ui.TextInput(label="🏷️ Nazwa/tytuł giveawayu", max_length=100, required=True)
+            self.desc_input = discord.ui.TextInput(label="📝 Opis (zasady)", style=discord.TextStyle.paragraph, max_length=600, required=True)
+            self.reward_input = discord.ui.TextInput(label="🎁 Nagroda", max_length=100, required=True)
+            self.duration_input = discord.ui.TextInput(label="⏱️ Czas (np. 10m, 2h, 1d)", max_length=6, required=True)
+            self.winners_input = discord.ui.TextInput(label="🎉 Liczba zwycięzców", max_length=2, required=True)
 
             self.add_item(self.title_input)
             self.add_item(self.desc_input)
@@ -151,9 +128,8 @@ class GiveawayCog(commands.Cog):
             self.add_item(self.winners_input)
 
         async def on_submit(self, interaction: discord.Interaction):
-            # uprawnienia: administrator / owner
             if not (interaction.user.guild_permissions.administrator or interaction.user.id == interaction.guild.owner_id):
-                await interaction.response.send_message("⛔ Nie masz uprawnień do tworzenia giveawayów.", ephemeral=True)
+                await interaction.response.send_message("⛔ Nie masz uprawnień.", ephemeral=True)
                 return
 
             dur_str = self.duration_input.value.strip().lower()
@@ -167,7 +143,7 @@ class GiveawayCog(commands.Cog):
                 if winners_count < 1:
                     raise ValueError()
             except Exception:
-                await interaction.response.send_message("❌ Liczba zwycięzców musi być liczbą całkowitą >= 1.", ephemeral=True)
+                await interaction.response.send_message("❌ Liczba zwycięzców musi być >=1.", ephemeral=True)
                 return
 
             end_ts = int(time.time()) + seconds
@@ -185,15 +161,10 @@ class GiveawayCog(commands.Cog):
             )
             embed.set_footer(text="Kliknij przycisk poniżej, aby wziąć udział!")
 
-            # wyślij wiadomość + persistent view (z custom_id zawierającym message id)
-            view = GiveawayView(0)  # tymczasowo 0, zaktualizujemy po wysłaniu
+            view = GiveawayView()  # static button custom_id
             msg = await interaction.channel.send(embed=embed, view=view)
-            # teraz przypisz prawdziwe id do view i zarejestruj
-            view.message_id = msg.id
-            # zarejestruj persistent view
-            self.parent.bot.add_view(GiveawayView(msg.id))
 
-            # zapisz do pliku
+            # save to file
             data = load_giveaways()
             data[str(msg.id)] = {
                 "guild_id": interaction.guild_id,
@@ -212,7 +183,7 @@ class GiveawayCog(commands.Cog):
 
             await interaction.response.send_message("✅ Giveaway został utworzony i zapisany!", ephemeral=True)
 
-    # ---------------- komendy slash ----------------
+    # ---- slash commands ----
     @app_commands.command(name="giveaway", description="🎉 Utwórz nowy giveaway (tylko admin).")
     async def giveaway(self, interaction: discord.Interaction):
         modal = GiveawayCog._CreateModal(self)
@@ -225,14 +196,13 @@ class GiveawayCog(commands.Cog):
             await interaction.response.send_message("⛔ Brak uprawnień.", ephemeral=True)
             return
         data = load_giveaways()
-        g = data.get(message_id)
+        g = data.get(str(message_id))
         if not g:
             await interaction.response.send_message("❌ Nie znaleziono giveawayu o takim ID.", ephemeral=True)
             return
         if g.get("ended"):
             await interaction.response.send_message("⚠️ Ten giveaway już został zakończony.", ephemeral=True)
             return
-        # zakończ natychmiast
         await self._finish_giveaway(int(message_id))
         await interaction.response.send_message("✅ Giveaway zakończony manualnie.", ephemeral=True)
 
@@ -243,18 +213,18 @@ class GiveawayCog(commands.Cog):
             await interaction.response.send_message("⛔ Brak uprawnień.", ephemeral=True)
             return
         data = load_giveaways()
-        g = data.get(message_id)
+        g = data.get(str(message_id))
         if not g:
             await interaction.response.send_message("❌ Nie znaleziono giveawayu o takim ID.", ephemeral=True)
             return
         if not g.get("winners"):
-            await interaction.response.send_message("⚠️ Najpierw musi być wylosowany zwycięzca (giveaway zakończony).", ephemeral=True)
+            await interaction.response.send_message("⚠️ Najpierw musi być wylosowany zwycięzca.", ephemeral=True)
             return
         participants = g.get("participants", [])
         previous = g.get("winners", [])
         possible = [p for p in participants if p not in previous]
         if not possible:
-            await interaction.response.send_message("⚠️ Brak dostępnych uczestników do ponownego losowania.", ephemeral=True)
+            await interaction.response.send_message("⚠️ Brak uczestników do rerollu.", ephemeral=True)
             return
         new = random.choice(possible)
         replaced = previous[0] if previous else None
@@ -262,8 +232,6 @@ class GiveawayCog(commands.Cog):
             g["winners"].remove(replaced)
         g["winners"].append(new)
         save_giveaways(data)
-
-        # edytuj wiadomość z wynikiem (jeśli możliwe)
         try:
             guild = self.bot.get_guild(g["guild_id"])
             channel = guild.get_channel(g["channel_id"])
@@ -278,10 +246,9 @@ class GiveawayCog(commands.Cog):
             await channel.send(f"🔁 Nowy zwycięzca: <@{int(new)}> (zamiast <@{int(replaced)}>).")
         except Exception:
             pass
-
         await interaction.response.send_message("✅ Reroll zakończony.", ephemeral=True)
 
-    # ---------------- background checker ----------------
+    # ---- background checker ----
     @tasks.loop(seconds=CHECK_INTERVAL)
     async def check_loop(self):
         data = load_giveaways()
@@ -299,7 +266,7 @@ class GiveawayCog(commands.Cog):
     async def before_check(self):
         await self.bot.wait_until_ready()
 
-    # ---------------- finish giveaway helper ----------------
+    # ---- finalize ----
     async def _finish_giveaway(self, message_id: int):
         data = load_giveaways()
         g = data.get(str(message_id))
@@ -314,7 +281,6 @@ class GiveawayCog(commands.Cog):
         g["ended"] = True
         save_giveaways(data)
 
-        # try edit message and announce
         try:
             guild = self.bot.get_guild(g["guild_id"])
             if not guild:
@@ -343,7 +309,6 @@ class GiveawayCog(commands.Cog):
         except Exception:
             pass
 
-# ---------------- setup extension ----------------
+# ---- setup ----
 async def setup(bot: commands.Bot):
-    cog = GiveawayCog(bot)
-    await bot.add_cog(cog)
+    await bot.add_cog(GiveawayCog(bot))
