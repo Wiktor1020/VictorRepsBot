@@ -1,178 +1,168 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-import json
-import os
+from discord.ui import View, Button, Modal, TextInput
+import asyncio
 
-TICKETS_FILE = "tickets.json"
-
-def load_tickets():
-    if not os.path.exists(TICKETS_FILE):
-        return {}
-    with open(TICKETS_FILE, "r") as f:
-        return json.load(f)
-
-def save_tickets(data):
-    with open(TICKETS_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+active_tickets = {}  # {guild_id: {user_id: [kategorie]}}
 
 
-# --------------------- MODAL ---------------------
-class TicketModal(discord.ui.Modal, title="Utwórz ticket"):
-    def __init__(self, category_name, bot):
-        super().__init__()
+# ------------------ MODAL OTWIERANIA TICKETA ------------------
+class TicketModal(Modal, title="🎫 Utwórz ticket"):
+    def __init__(self, category_name: str):
+        super().__init__(timeout=None)
         self.category_name = category_name
-        self.bot = bot
 
-        self.problem = discord.ui.TextInput(
-            label="Opisz problem",
-            style=discord.TextStyle.long,
+        self.problem = TextInput(
+            label="Opisz co od nas potrzebujesz:",
+            style=discord.TextStyle.paragraph,
             required=True,
-            max_length=400
+            max_length=500
         )
+
         self.add_item(self.problem)
 
     async def on_submit(self, interaction: discord.Interaction):
-        user = interaction.user
-        tickets = load_tickets()
+        guild = interaction.guild
+        member = interaction.user
 
-        # --- Czy użytkownik ma już ticket w tej kategorii? ---
-        if str(interaction.guild_id) in tickets:
-            if str(user.id) in tickets[str(interaction.guild_id)].get(self.category_name, {}):
-                try:
-                    existing_channel_id = tickets[str(interaction.guild_id)][self.category_name][str(user.id)]
-                    existing_channel = interaction.guild.get_channel(existing_channel_id)
-                    if existing_channel:
-                        await interaction.response.send_message(
-                            f"❗ Masz już ticket: {existing_channel.mention}", ephemeral=True
-                        )
-                        return
-                    else:
-                        # kanał nie istnieje — usuwamy wpis
-                        del tickets[str(interaction.guild_id)][self.category_name][str(user.id)]
-                        save_tickets(tickets)
-                except KeyError:
-                    pass
+        if guild.id not in active_tickets:
+            active_tickets[guild.id] = {}
 
-        # --- Sprawdzamy kategorię, tworzymy jeśli brak ---
-        category = discord.utils.get(interaction.guild.categories, name=self.category_name)
+        if member.id not in active_tickets[guild.id]:
+            active_tickets[guild.id][member.id] = []
+
+        # --- użytkownik ma już ticket ---
+        if self.category_name in active_tickets[guild.id][member.id]:
+            await interaction.response.send_message(
+                "⚠️ Masz już otwarty ticket w tej kategorii! Zamknij go, zanim utworzysz nowy.",
+                ephemeral=True
+            )
+            return
+
+        # --- uprawnienia ---
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            member: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+        }
+
+        # admini widzą tickety
+        for role in guild.roles:
+            if role.permissions.manage_messages or role.permissions.administrator:
+                overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
+        # --- główna kategoria ---
+        category_name = "🎟️・TICKETY"
+        category = discord.utils.get(guild.categories, name=category_name)
+
         if not category:
-            category = await interaction.guild.create_category(self.category_name)
+            category = await guild.create_category(name=category_name, overwrites=overwrites)
+            await category.edit(position=0)
+        else:
+            await category.edit(overwrites=overwrites, position=0)
 
-        # --- Tworzenie kanału ticketu ---
-        channel = await interaction.guild.create_text_channel(
-            name=f"ticket-{user.name}-{self.category_name.lower()}",
+        # --- utworzenie kanału ---
+        ticket_channel = await guild.create_text_channel(
+            name=f"ticket-{member.name}-{self.category_name.lower()}",
             category=category,
-            topic=f"Ticket użytkownika {user}",
-            overwrites={
-                interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
-                user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-                interaction.guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
-            }
+            topic=f"Ticket użytkownika {member} ({self.category_name})",
+            overwrites=overwrites
         )
 
-        # --- Rejestracja ticketu w bazie ---
-        guild_id = str(interaction.guild_id)
-        if guild_id not in tickets:
-            tickets[guild_id] = {}
-        if self.category_name not in tickets[guild_id]:
-            tickets[guild_id][self.category_name] = {}
+        # zapisz aktywny ticket
+        active_tickets[guild.id][member.id].append(self.category_name)
 
-        tickets[guild_id][self.category_name][str(user.id)] = channel.id
-        save_tickets(tickets)
+        # --- embed w ticketcie ---
+        embed = discord.Embed(
+            title=f"🎫 Ticket - {self.category_name}",
+            description=f"**Użytkownik:** {member.mention}\n\n📩 **Zgłoszenie:**\n{self.problem.value}",
+            color=discord.Color.from_str("#CC0000")
+        )
+        embed.set_footer(text="VictorReps | System Ticketów")
 
+        # --- przycisk zamknięcia ---
+        close_btn = Button(label="Zamknij ticket", style=discord.ButtonStyle.danger, emoji="🔒")
+
+        async def close_callback(inter_close: discord.Interaction):
+            if inter_close.user == member or inter_close.user.guild_permissions.manage_channels:
+                await inter_close.response.send_message("🔒 Ticket zostanie zamknięty za 5 sekund...", ephemeral=True)
+                await asyncio.sleep(5)
+                await ticket_channel.delete()
+
+                # usuń z listy aktywnych
+                if guild.id in active_tickets and member.id in active_tickets[guild.id]:
+                    if self.category_name in active_tickets[guild.id][member.id]:
+                        active_tickets[guild.id][member.id].remove(self.category_name)
+            else:
+                await inter_close.response.send_message("⛔ Nie możesz zamknąć tego ticketa.", ephemeral=True)
+
+        close_btn.callback = close_callback
+
+        view = View()
+        view.add_item(close_btn)
+
+        await ticket_channel.send(content=f"{member.mention}", embed=embed, view=view)
         await interaction.response.send_message(
-            f"🎫 Ticket został utworzony: {channel.mention}", ephemeral=True
+            f"✅ Ticket został utworzony: {ticket_channel.mention}", ephemeral=True
         )
 
-        await channel.send(
-            f"👋 Witaj {user.mention}!\n"
-            f"Opisałeś problem:\n```\n{self.problem.value}\n```"
-        )
 
-        # Dodaj przycisk zamknięcia
-        await channel.send(view=CloseTicketView(self.category_name, self.bot, user.id))
+# ------------------ PRZYCISKI NA PANELU ------------------
+class TicketButton(Button):
+    def __init__(self, label: str, emoji: str):
+        super().__init__(label=label, emoji=emoji, style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction: discord.Interaction):
+        modal = TicketModal(self.label)
+        await interaction.response.send_modal(modal)
 
 
-# --------------------- ZAMKNIĘCIE TICKETU ---------------------
-class CloseTicketView(discord.ui.View):
-    def __init__(self, category_name, bot, owner_id):
+# ------------------ PANEL TICKETÓW ------------------
+class TicketPanel(View):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.category_name = category_name
-        self.bot = bot
-        self.owner_id = owner_id
 
-    @discord.ui.button(label="Zamknij ticket", style=discord.ButtonStyle.red)
-    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
-        tickets = load_tickets()
-        guild_id = str(interaction.guild_id)
+        categories = [
+            ("Paczka", "📦"),
+            ("Pomoc", "🧰"),
+            ("Współpraca", "🤝"),
+            ("Inne", "💬")
+        ]
 
-        if guild_id not in tickets:
-            return await interaction.response.send_message("❌ Ten ticket nie istnieje w bazie.", ephemeral=True)
-
-        if self.category_name not in tickets[guild_id]:
-            return await interaction.response.send_message("❌ Ticket nie jest powiązany z kategorią.", ephemeral=True)
-
-        if str(self.owner_id) not in tickets[guild_id][self.category_name]:
-            return await interaction.response.send_message("❌ Ticket nie jest zarejestrowany.", ephemeral=True)
-
-        # Sprawdzamy czy user ma prawo zamknąć ticketa
-        if interaction.user.id != self.owner_id and not interaction.user.guild_permissions.manage_channels:
-            return await interaction.response.send_message("❌ Nie masz permisji do zamknięcia tego ticketu.", ephemeral=True)
-
-        channel = interaction.channel
-
-        # Usuwamy z bazy
-        del tickets[guild_id][self.category_name][str(self.owner_id)]
-        save_tickets(tickets)
-
-        await interaction.response.send_message("🗑️ Ticket zostanie zamknięty za 5 sekund...", ephemeral=True)
-
-        try:
-            await channel.delete(reason="Zamknięcie ticketu")
-        except:
-            pass
+        for name, emoji in categories:
+            self.add_item(TicketButton(label=name, emoji=emoji))
 
 
-# --------------------- PRZYCISK PANELU ---------------------
-class TicketButtonView(discord.ui.View):
-    def __init__(self, category_name, bot):
-        super().__init__(timeout=None)
-        self.category_name = category_name
-        self.bot = bot
-
-    @discord.ui.button(label="🎫 Utwórz ticket", style=discord.ButtonStyle.green)
-    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(TicketModal(self.category_name, self.bot))
-
-
-# --------------------- KOG ---------------------
-class TicketPanel(commands.Cog):
+# ------------------ KOMENDA /ticketpanel ------------------
+class TicketPanelCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="ticketpanel2", description="Utwórz panel ticketów")
-    async def ticketpanel2(self, interaction: discord.Interaction, kategoria: str):
+    @app_commands.command(name="ticketpanel", description="Wyświetla panel ticketów (dla właściciela lub admina).")
+    async def ticketpanel_cmd(self, interaction: discord.Interaction):
+
+        if not (
+            interaction.user.id == interaction.guild.owner_id
+            or interaction.user.guild_permissions.administrator
+        ):
+            await interaction.response.send_message(
+                "⛔ Tylko właściciel serwera lub administrator może użyć tej komendy.",
+                ephemeral=True
+            )
+            return
+
         embed = discord.Embed(
             title="🎫 Panel Ticketów",
-            description="Kliknij przycisk, aby utworzyć ticket.",
-            color=discord.Color.blue()
+            description=
+            "Kliknij odpowiedni przycisk poniżej, a pomożemy Ci tak szybko, jak to możliwe.\n\n"
+            "Wybierz kategorię swojego problemu:",
+            color=discord.Color.from_str("#CC0000")
         )
+        embed.set_footer(text="VictorReps | System Ticketów")
 
-        view = TicketButtonView(kategoria, self.bot)
-        await interaction.channel.send(embed=embed, view=view)
-        await interaction.response.send_message("✔ Panel ticketów został utworzony!", ephemeral=True)
-
-    @commands.Cog.listener()
-    async def on_ready(self):
-        print("TicketPanel załadowany — odtwarzam persistent views...")
-
-        data = load_tickets()
-        for guild_id, categories in data.items():
-            for category_name in categories.keys():
-                self.bot.add_view(TicketButtonView(category_name, self.bot))
+        view = TicketPanel()
+        await interaction.response.send_message(embed=embed, view=view)
 
 
 async def setup(bot):
-    await bot.add_cog(TicketPanel(bot))
-
+    await bot.add_cog(TicketPanelCog(bot))
