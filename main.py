@@ -51,39 +51,6 @@ async def ping(interaction: discord.Interaction):
     latency = round(bot.latency * 1000)
     await interaction.response.send_message(f"🏓 **Ping:** `{latency}ms`")
 
-# ------------------ KOMENDA: /stylizujkanaly ------------------
-@bot.tree.command(name="stylizujkanaly", description="Stylizuje kanały serwera.")
-async def stylizujkanaly(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("⛔ Brak uprawnień.", ephemeral=True)
-        return
-
-    guild = interaction.guild
-
-    STYLE = {
-        "📢・OGŁOSZENIA": ["ogłoszenia", "updates", "info"],
-        "💬・CZAT": ["chat", "główny", "general"],
-        "❓・POMOC": ["help", "support"],
-        "🎉・EVENTY": ["eventy", "giveaway"],
-        "🎵・MUZYKA": ["music", "muzyka"],
-    }
-
-    renamed = 0
-
-    for channel in guild.channels:
-        old = channel.name.lower()
-
-        for new_name, keywords in STYLE.items():
-            for k in keywords:
-                if k in old:
-                    try:
-                        await channel.edit(name=new_name)
-                        renamed += 1
-                    except:
-                        pass
-
-    await interaction.response.send_message(f"✨ Zmieniono nazwy **{renamed}** kanałów!")
-
 # ------------------ KOMENDA: /uptime ------------------
 @bot.tree.command(name="uptime", description="Pokazuje czas działania bota.")
 async def uptime(interaction: discord.Interaction):
@@ -97,9 +64,9 @@ async def uptime(interaction: discord.Interaction):
         f"⏳ Bot działa od **{delta.days}d {h}h {m}m {s}s**."
     )
 
-# ------------------ ŁADOWANIE COGÓW (giveaway + ticketpanel) ------------------
+# ------------------ ŁADOWANIE COGÓW ------------------
 async def load_extensions():
-    extensions = ["giveaway", "ticketpanel"]
+    extensions = ["giveaway", "ticketpanel", "stylizacja"]
     for ext in extensions:
         try:
             await bot.load_extension(ext)
@@ -114,3 +81,4 @@ async def main():
 
 # ------------------ START BOTA ------------------
 asyncio.run(main())
+
