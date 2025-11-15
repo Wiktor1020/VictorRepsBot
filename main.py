@@ -45,24 +45,48 @@ async def on_ready():
 
     print(f"Bot zalogowany jako {bot.user}")
 
-# ------------------ KOMENDA: /ping ------------------
-@bot.tree.command(name="ping", description="Sprawdza ping bota.")
+# =======================
+#  PING & UPTIME COMMANDS
+# =======================
+
+import time
+import datetime
+import discord
+from discord import app_commands
+
+# ---- zapis czasu startu bota ----
+bot_start_time = time.time()
+
+
+# ---------- /ping ----------
+@bot.tree.command(name="ping", description="Sprawdź opóźnienie bota.")
 async def ping(interaction: discord.Interaction):
     latency = round(bot.latency * 1000)
-    await interaction.response.send_message(f"🏓 **Ping:** `{latency}ms`")
+    await interaction.response.send_message(
+        f"🏓 Pong! Opóźnienie: **{latency}ms**",
+        ephemeral=True
+    )
 
-# ------------------ KOMENDA: /uptime ------------------
-@bot.tree.command(name="uptime", description="Pokazuje czas działania bota.")
+
+# ---------- /uptime ----------
+@bot.tree.command(name="uptime", description="Zobacz od jak dawna bot jest włączony.")
 async def uptime(interaction: discord.Interaction):
-    now = datetime.utcnow()
-    delta = now - start_time
 
-    h, r = divmod(delta.seconds, 3600)
-    m, s = divmod(r, 60)
+    elapsed = int(time.time() - bot_start_time)
+
+    # Formatowanie czasu
+    days = elapsed // 86400
+    hours = (elapsed % 86400) // 3600
+    minutes = (elapsed % 3600) // 60
+    seconds = elapsed % 60
+
+    uptime_text = f"{days}d {hours}h {minutes}m {seconds}s"
 
     await interaction.response.send_message(
-        f"⏳ Bot działa od **{delta.days}d {h}h {m}m {s}s**."
+        f"⏳ Bot działa od: **{uptime_text}**",
+        ephemeral=True
     )
+
 
 # ------------------ ŁADOWANIE COGÓW ------------------
 async def load_extensions():
